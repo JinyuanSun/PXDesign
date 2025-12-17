@@ -552,12 +552,11 @@ We explicitly thank the members who contribute to the release of this repository
 
 **Codebase Acknowledgements**:
 
-The evaluation and filtering modules in this repository (specifically within [PXDesignBench](https://github.com/bytedance/PXDesignBench)) utilize the codebase of [ColabDesign](https://github.com/sokrypton/ColabDesign). We thank [Dr. Sergey Ovchinnikov](https://github.com/sokrypton) and contributors for their outstanding integration of ProteinMPNN and AF2-IG interfaces, which accelerated our development.
+This repository (specifically within [PXDesignBench](https://github.com/bytedance/PXDesignBench)) utilizes the codebase of [ColabDesign](https://github.com/sokrypton/ColabDesign) in a part of the filtering modules. We thank [Dr. Sergey Ovchinnikov](https://github.com/sokrypton) and contributors for their outstanding integration of ProteinMPNN and AF2-IG interfaces, which accelerated our development.
 
 **Methodological Foundations**:
 
-If you use this repository, please cite our preprint. Additionally, as our pipeline integrates **AF2-IG** and **ProteinMPNN** for filtering and sequence design, we strongly encourage citing their original papers to respect the methods used.
-
+If you use this repository, please cite our preprint. Additionally, our pipeline heavily relies on [**Protenix**](https://github.com/bytedance/Protenix) for structure prediction and confidence estimation, and integrates **AF2-IG** and **ProteinMPNN** for filtering and sequence design. We strongly encourage citing these original papers to respect the methods used.
 
 ```bibtex
 /* ================== PXDesign & Protenix ================== */
