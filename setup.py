@@ -46,11 +46,12 @@ setup(
     url="https://github.com/bytedance/PXDesign",
     author_email="ai4s-bio@bytedance.com",
     packages=find_packages(
+        include=("pxdesign", "pxdesign.*"),
         exclude=(
             "assets",
             "benchmark",
             "*.egg-info",
-        )
+        ),
     ),
     # install_requires=install_requires,
     license="Apache 2.0 License",
