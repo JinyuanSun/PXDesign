@@ -277,11 +277,12 @@ pip install --no-cache-dir git+https://github.com/bytedance/PXDesignBench.git@v0
 echo ">>> Installing PXDesign"
 pip install -e .
 
-if [ "${env_tool}" = "micromamba" ]; then
-  micromamba install -c conda-forge cudnn -y || { echo "Error: failed to install cudnn with micromamba."; exit 1; }
-else
-  conda install -c conda-forge cudnn -y || { echo "Error: failed to install cudnn with conda."; exit 1; }
-fi
+# if [ "${env_tool}" = "micromamba" ]; then
+#   micromamba install -c conda-forge cudnn -y || { echo "Error: failed to install cudnn with micromamba."; exit 1; }
+# else
+#   conda install -c conda-forge cudnn -y || { echo "Error: failed to install cudnn with conda."; exit 1; }
+# fi
+pip install nvidia-cuda-nvcc-cu12
 
 
 # -------------------------------
