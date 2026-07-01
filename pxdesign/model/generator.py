@@ -19,6 +19,172 @@ import torch
 from protenix.model.utils import centre_random_augmentation
 
 
+def apply_masked_guidance(
+    x: torch.Tensor,
+    reference: torch.Tensor,
+    mask: torch.Tensor,
+    weight: float,
+) -> torch.Tensor:
+    if weight <= 0:
+        return x
+    mask = mask.bool()
+    if int(mask.sum().item()) == 0:
+        return x
+    guided = x + float(weight) * (reference - x)
+    return torch.where(mask.expand(*x.shape[:-1], 1), guided, x)
+
+
+def initialize_masked_coords(
+    x: torch.Tensor,
+    reference: torch.Tensor,
+    mask: torch.Tensor,
+    sigma: torch.Tensor,
+    noise: torch.Tensor,
+) -> torch.Tensor:
+    mask = mask.bool()
+    if int(mask.sum().item()) == 0:
+        return x
+    initialized = reference + sigma * noise
+    return torch.where(mask.expand(*x.shape[:-1], 1), initialized, x)
+
+
+def align_reference_to_masked_coords(
+    reference: torch.Tensor,
+    coords: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    mask = mask.bool()
+    if int(mask.sum().item()) == 0:
+        return reference
+
+    original_shape = coords.shape
+    ref_flat = reference.reshape(-1, original_shape[-2], 3)
+    coords_flat = coords.reshape(-1, original_shape[-2], 3)
+    mask_flat = mask.reshape(-1, original_shape[-2], 1).to(dtype=coords.dtype)
+
+    counts = mask_flat.sum(dim=-2, keepdim=True).clamp_min(1.0)
+    ref_centroid = (ref_flat * mask_flat).sum(dim=-2, keepdim=True) / counts
+    coords_centroid = (coords_flat * mask_flat).sum(dim=-2, keepdim=True) / counts
+    ref_centered = ref_flat - ref_centroid
+    coords_centered = coords_flat - coords_centroid
+
+    covariance = torch.matmul(
+        (ref_centered * mask_flat).transpose(-1, -2),
+        coords_centered * mask_flat,
+    )
+    u, _, vh = torch.linalg.svd(covariance)
+    v = vh.transpose(-1, -2)
+    correction = torch.ones(
+        (*v.shape[:-2], 3), device=coords.device, dtype=coords.dtype
+    )
+    determinant = torch.linalg.det(torch.matmul(u, vh))
+    correction[..., -1] = torch.where(
+        determinant < 0,
+        torch.full_like(determinant, -1.0),
+        torch.ones_like(determinant),
+    )
+    correction = torch.diag_embed(correction)
+    rotation = torch.matmul(torch.matmul(u, correction), vh)
+    aligned = torch.matmul(ref_centered, rotation) + coords_centroid
+    return aligned.reshape(original_shape)
+
+
+def apply_interchain_clash_guidance(
+    x: torch.Tensor,
+    target_mask: torch.Tensor,
+    design_mask: torch.Tensor,
+    threshold: float,
+    weight: float,
+) -> torch.Tensor:
+    if weight <= 0 or threshold <= 0:
+        return x
+    target_mask = target_mask.bool()
+    design_mask = design_mask.bool()
+    if int(target_mask.sum().item()) == 0 or int(design_mask.sum().item()) == 0:
+        return x
+
+    original_shape = x.shape
+    x_flat = x.reshape(-1, original_shape[-2], 3)
+    target_mask_flat = target_mask.reshape(-1, original_shape[-2])
+    design_mask_flat = design_mask.reshape(-1, original_shape[-2])
+    guided_flat = x_flat.clone()
+
+    for sample_idx in range(x_flat.shape[0]):
+        target_coords = x_flat[sample_idx, target_mask_flat[sample_idx]]
+        design_indices = torch.nonzero(design_mask_flat[sample_idx], as_tuple=False).squeeze(-1)
+        design_coords = x_flat[sample_idx, design_indices]
+        if target_coords.numel() == 0 or design_coords.numel() == 0:
+            continue
+
+        diff = design_coords[:, None, :] - target_coords[None, :, :]
+        dist = torch.linalg.norm(diff, dim=-1).clamp_min(1e-6)
+        close = dist < float(threshold)
+        if not bool(close.any().item()):
+            continue
+        direction = diff / dist[..., None]
+        penetration = (float(threshold) - dist).clamp_min(0.0)
+        repel = direction * penetration[..., None] * close[..., None].to(dtype=x.dtype)
+        n_close = close.sum().clamp_min(1).to(dtype=x.dtype)
+        repel = repel.sum(dim=(0, 1)) / n_close
+        guided_flat[sample_idx, design_indices] = (
+            design_coords + float(weight) * repel
+        )
+
+    return guided_flat.reshape(original_shape)
+
+
+def apply_hotspot_contact_guidance(
+    x: torch.Tensor,
+    cdr_mask: torch.Tensor,
+    hotspot_mask: torch.Tensor,
+    move_mask: torch.Tensor,
+    target_distance: float,
+    weight: float,
+) -> torch.Tensor:
+    if weight <= 0 or target_distance <= 0:
+        return x
+    cdr_mask = cdr_mask.bool()
+    hotspot_mask = hotspot_mask.bool()
+    move_mask = move_mask.bool()
+    if (
+        int(cdr_mask.sum().item()) == 0
+        or int(hotspot_mask.sum().item()) == 0
+        or int(move_mask.sum().item()) == 0
+    ):
+        return x
+
+    original_shape = x.shape
+    x_flat = x.reshape(-1, original_shape[-2], 3)
+    cdr_mask_flat = cdr_mask.reshape(-1, original_shape[-2])
+    hotspot_mask_flat = hotspot_mask.reshape(-1, original_shape[-2])
+    move_mask_flat = move_mask.reshape(-1, original_shape[-2])
+    guided_flat = x_flat.clone()
+
+    for sample_idx in range(x_flat.shape[0]):
+        cdr_coords = x_flat[sample_idx, cdr_mask_flat[sample_idx]]
+        hotspot_coords = x_flat[sample_idx, hotspot_mask_flat[sample_idx]]
+        move_indices = torch.nonzero(move_mask_flat[sample_idx], as_tuple=False).squeeze(-1)
+        if cdr_coords.numel() == 0 or hotspot_coords.numel() == 0 or move_indices.numel() == 0:
+            continue
+
+        diff = hotspot_coords[None, :, :] - cdr_coords[:, None, :]
+        dist = torch.linalg.norm(diff, dim=-1).clamp_min(1e-6)
+        min_index = int(torch.argmin(dist).item())
+        hotspot_count = hotspot_coords.shape[0]
+        cdr_idx = min_index // hotspot_count
+        hotspot_idx = min_index % hotspot_count
+        min_dist = dist[cdr_idx, hotspot_idx]
+        if min_dist <= float(target_distance):
+            continue
+        direction = diff[cdr_idx, hotspot_idx] / min_dist
+        displacement = direction * (min_dist - float(target_distance))
+        guided_flat[sample_idx, move_indices] = (
+            x_flat[sample_idx, move_indices] + float(weight) * displacement
+        )
+
+    return guided_flat.reshape(original_shape)
+
+
 class InferenceNoiseScheduler:
     """
     Scheduler for noise-level (time steps)
@@ -95,6 +261,13 @@ def sample_diffusion(
     diffusion_chunk_size: Optional[int] = None,
     inplace_safe: bool = False,
     attn_chunk_size: Optional[int] = None,
+    framework_init_noise_sigma: Optional[float] = None,
+    framework_guidance_weight: float = 0.0,
+    condition_init_from_coords: bool = False,
+    clash_guidance_weight: float = 0.0,
+    clash_guidance_threshold: float = 2.5,
+    hotspot_guidance_weight: float = 0.0,
+    hotspot_guidance_target_distance: float = 10.0,
 ) -> torch.Tensor:
     """Implements Algorithm 18 in AF3.
     It performances denoising steps from time 0 to time T.
@@ -130,12 +303,148 @@ def sample_diffusion(
     dtype = s_inputs.dtype
     print("sampling eta schedule: ", step_scale_eta)
 
+    label_dict = input_feature_dict.get("label_dict", {})
+    condition_coordinate_mask = label_dict.get("condition_coordinate_mask")
+    rigid_framework_coordinate = label_dict.get("rigid_framework_coordinate")
+    rigid_framework_coordinate_mask = label_dict.get("rigid_framework_coordinate_mask")
+    has_framework_init = (
+        rigid_framework_coordinate is not None
+        and rigid_framework_coordinate_mask is not None
+        and int(rigid_framework_coordinate_mask.sum().item()) > 0
+    )
+    if (
+        has_framework_init
+        and framework_init_noise_sigma is not None
+        and float(framework_init_noise_sigma) > 0
+    ):
+        diffs = (noise_schedule - float(framework_init_noise_sigma)).abs()
+        start_idx = int(diffs.argmin().item())
+        noise_schedule = noise_schedule[start_idx:]
+        print(
+            "framework init noise sigma: "
+            f"{float(framework_init_noise_sigma):.3f}; "
+            f"starting at schedule index {start_idx}, "
+            f"sigma={float(noise_schedule[0]):.3f}, "
+            f"steps={len(noise_schedule) - 1}"
+        )
+
+    def _framework_coords_and_mask(x):
+        if rigid_framework_coordinate is None or rigid_framework_coordinate_mask is None:
+            return None, None
+        coords = rigid_framework_coordinate.to(device=device, dtype=dtype)
+        mask = rigid_framework_coordinate_mask.to(device=device).bool()
+        if int(mask.sum().item()) == 0:
+            return None, None
+        coords = coords.reshape(*([1] * len(batch_shape)), 1, N_atom, 3)
+        mask = mask.reshape(*([1] * len(batch_shape)), 1, N_atom, 1)
+        return coords.expand_as(x), mask.expand(*x.shape[:-1], 1)
+
+    def _condition_coords_and_mask(x):
+        if condition_coordinate_mask is None:
+            return None, None
+        condition_coordinate = label_dict.get("condition_coordinate")
+        if condition_coordinate is None:
+            return None, None
+        coords = condition_coordinate.to(device=device, dtype=dtype)
+        mask = condition_coordinate_mask.to(device=device).bool()
+        if int(mask.sum().item()) == 0:
+            return None, None
+        coords = coords.reshape(*([1] * len(batch_shape)), 1, N_atom, 3)
+        mask = mask.reshape(*([1] * len(batch_shape)), 1, N_atom, 1)
+        return coords.expand_as(x), mask.expand(*x.shape[:-1], 1)
+
+    def _initialize_condition_coords(x, sigma):
+        if not condition_init_from_coords:
+            return x
+        coords, mask = _condition_coords_and_mask(x)
+        if coords is None or mask is None:
+            return x
+        condition_noise = torch.randn(size=x.shape, device=device, dtype=dtype)
+        return initialize_masked_coords(
+            x=x,
+            reference=coords,
+            mask=mask,
+            sigma=sigma,
+            noise=condition_noise,
+        )
+
+    def _apply_framework_guidance(x, sigma, framework_noise):
+        coords, mask = _framework_coords_and_mask(x)
+        if coords is None or mask is None:
+            return x
+        reference = coords + sigma * framework_noise
+        reference = align_reference_to_masked_coords(reference, x, mask)
+        return apply_masked_guidance(
+            x=x,
+            reference=reference,
+            mask=mask,
+            weight=framework_guidance_weight,
+        )
+
+    def _target_and_design_masks(x):
+        if condition_coordinate_mask is None:
+            return None, None
+        target_mask = condition_coordinate_mask.to(device=device).bool()
+        target_mask = target_mask.reshape(*([1] * len(batch_shape)), 1, N_atom, 1)
+        target_mask = target_mask.expand(*x.shape[:-1], 1)
+        design_mask = ~target_mask
+        return target_mask, design_mask
+
+    def _framework_mask_for_shape(x):
+        _, framework_mask = _framework_coords_and_mask(x)
+        return framework_mask
+
+    def _apply_clash_guidance(x):
+        target_mask, design_mask = _target_and_design_masks(x)
+        if target_mask is None or design_mask is None:
+            return x
+        return apply_interchain_clash_guidance(
+            x=x,
+            target_mask=target_mask,
+            design_mask=design_mask,
+            threshold=clash_guidance_threshold,
+            weight=clash_guidance_weight,
+        )
+
+    def _apply_hotspot_guidance(x):
+        target_mask, design_mask = _target_and_design_masks(x)
+        if target_mask is None or design_mask is None:
+            return x
+        if "hotspot" not in input_feature_dict:
+            return x
+        hotspot_tokens = input_feature_dict["hotspot"].to(device=device)
+        atom_to_token_idx = input_feature_dict["atom_to_token_idx"].to(device=device)
+        hotspot_atom_mask = hotspot_tokens[..., atom_to_token_idx].to(torch.bool)
+        hotspot_atom_mask = hotspot_atom_mask.reshape(
+            *([1] * len(batch_shape)), 1, N_atom, 1
+        )
+        hotspot_atom_mask = hotspot_atom_mask.expand(*x.shape[:-1], 1) & target_mask
+        framework_mask = _framework_mask_for_shape(x)
+        cdr_mask = design_mask if framework_mask is None else design_mask & ~framework_mask
+        return apply_hotspot_contact_guidance(
+            x=x,
+            cdr_mask=cdr_mask,
+            hotspot_mask=hotspot_atom_mask,
+            move_mask=design_mask,
+            target_distance=hotspot_guidance_target_distance,
+            weight=hotspot_guidance_weight,
+        )
+
+    def _apply_guidance(x, sigma, framework_noise):
+        x = _apply_framework_guidance(x, sigma, framework_noise)
+        x = _apply_clash_guidance(x)
+        x = _apply_hotspot_guidance(x)
+        return x
+
     def _chunk_sample_diffusion(chunk_n_sample, inplace_safe):
         # init noise
         # [..., N_sample, N_atom, 3]
         x_l = noise_schedule[0] * torch.randn(
             size=(*batch_shape, chunk_n_sample, N_atom, 3), device=device, dtype=dtype
         )  # NOTE: set seed in distributed training
+        x_l = _initialize_condition_coords(x_l, noise_schedule[0])
+        framework_noise = torch.randn(size=x_l.shape, device=device, dtype=dtype)
+        x_l = _apply_guidance(x_l, noise_schedule[0], framework_noise)
         T = len(noise_schedule)
         for step_t, (c_tau_last, c_tau) in enumerate(
             zip(noise_schedule[:-1], noise_schedule[1:])
@@ -146,6 +455,7 @@ def sample_diffusion(
                 .squeeze(dim=-3)
                 .to(dtype)
             )
+            x_l = _apply_guidance(x_l, c_tau_last, framework_noise)
 
             # Denoise with a predictor-corrector sampler
             # 1. Add noise to move x_{c_tau_last} to x_{t_hat}
@@ -156,6 +466,7 @@ def sample_diffusion(
             x_noisy = x_l + noise_scale_lambda * delta_noise_level * torch.randn(
                 size=x_l.shape, device=device, dtype=dtype
             )
+            x_noisy = _apply_guidance(x_noisy, t_hat, framework_noise)
 
             # 2. Denoise from x_{t_hat} to x_{c_tau}
             # Euler step only
@@ -175,6 +486,7 @@ def sample_diffusion(
                 chunk_size=attn_chunk_size,
                 inplace_safe=inplace_safe,
             )
+            x_denoised = _apply_guidance(x_denoised, c_tau, framework_noise)
 
             delta = (x_noisy - x_denoised) / t_hat[
                 ..., None, None
@@ -204,6 +516,7 @@ def sample_diffusion(
                 else:
                     raise ValueError("Unsupported eta schedule!")
             x_l = x_noisy + eta * dt[..., None, None] * delta
+            x_l = _apply_guidance(x_l, c_tau, framework_noise)
 
         return x_l
 

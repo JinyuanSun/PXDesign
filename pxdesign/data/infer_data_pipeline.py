@@ -338,6 +338,22 @@ class InferenceDataset(Dataset):
             json_dict["sequences"] = []
 
         for gen_seq_dict in json_dict.get("generation", {}):
+            if gen_seq_dict.get("type") == "vhh_inpainting":
+                one_dict = {
+                    "proteinChain": {
+                        "sequence": gen_seq_dict["sequence"],
+                        "count": gen_seq_dict["count"],
+                        "sequence_type": "design",
+                        "use_msa": False,
+                        "framework_file": gen_seq_dict["framework_file"],
+                        "framework_chain": gen_seq_dict["framework_chain"],
+                        "fixed_source_resnums": gen_seq_dict["fixed_source_resnums"],
+                        "cdr_output_ranges": gen_seq_dict["cdr_output_ranges"],
+                    }
+                }
+                json_dict["sequences"].append(one_dict)
+                continue
+
             assert "sequence" not in gen_seq_dict
             length = gen_seq_dict["length"]
             count = gen_seq_dict["count"]

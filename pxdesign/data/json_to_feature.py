@@ -273,7 +273,17 @@ class SampleDictToFeatures:
         atom_array = self.build_full_atom_array()
         atom_array = self.add_bonds_between_entities(atom_array)
         atom_array = self.mse_to_met(atom_array)
+        rigid_annotations = {
+            name: atom_array.get_annotation(name).copy()
+            for name in (
+                "rigid_framework_coordinate",
+                "rigid_framework_coordinate_mask",
+            )
+            if name in atom_array._annot
+        }
         atom_array = self.add_atom_array_attributes(atom_array, self.entity_poly_type)
+        for name, value in rigid_annotations.items():
+            atom_array.set_annotation(name, value)
         return atom_array
 
     def get_feature_dict(self) -> tuple[dict[str, torch.Tensor], AtomArray, TokenArray]:
@@ -317,13 +327,22 @@ class SampleDictToFeatures:
     def add_design_features(self, atom_array):
 
         distogram_atom = atom_array[atom_array.distogram_rep_atom_mask.astype(bool)]
-        condi_token_mask = torch.tensor(distogram_atom.res_name != "xpb").bool()
-        condi_atom_mask = torch.tensor(atom_array.res_name != "xpb").bool()
+        if "rigid_framework_coordinate_mask" in atom_array._annot:
+            condi_token_mask = torch.from_numpy(
+                distogram_atom.conditional_label
+            ).bool()
+            condi_atom_mask = torch.from_numpy(atom_array.conditional_label).bool()
+            assert not any(
+                torch.from_numpy(atom_array.res_name == "xpb") & condi_atom_mask
+            )
+        else:
+            condi_token_mask = torch.tensor(distogram_atom.res_name != "xpb").bool()
+            condi_atom_mask = torch.tensor(atom_array.res_name != "xpb").bool()
 
-        assert all(
-            torch.from_numpy(distogram_atom.conditional_label) == condi_token_mask
-        )
-        assert all(torch.from_numpy(atom_array.conditional_label) == condi_atom_mask)
+            assert all(
+                torch.from_numpy(distogram_atom.conditional_label) == condi_token_mask
+            )
+            assert all(torch.from_numpy(atom_array.conditional_label) == condi_atom_mask)
 
         # Basic mask
         feature_dict = {
@@ -381,6 +400,13 @@ class SampleDictToFeatures:
         condition_coord = condition_coord * condition_coord_mask[:, None]
         label_dict["condition_coordinate"] = condition_coord
         label_dict["condition_coordinate_mask"] = condition_coord_mask
+        if "rigid_framework_coordinate" in atom_array._annot:
+            label_dict["rigid_framework_coordinate"] = torch.from_numpy(
+                atom_array.rigid_framework_coordinate
+            )
+            label_dict["rigid_framework_coordinate_mask"] = torch.from_numpy(
+                atom_array.rigid_framework_coordinate_mask
+            ).bool()
 
         feature_dict = self.prepare_structure_input(feature_dict, label_dict)
 

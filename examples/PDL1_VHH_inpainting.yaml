@@ -1,0 +1,18 @@
+task_name: PDL1_VHH_inpainting
+
+target:
+  file: "./examples/5o45.cif"
+  chains:
+    A:
+      crop: ["1-116"]
+      hotspots: [40, 99, 107]
+      msa: "./examples/msa/PDL1/0"
+
+vhh_framework:
+  file: "../RFantibody/scripts/examples/example_inputs/h-NbBCII10.pdb"
+  chain: H
+  numbering: imgt
+  cdr_lengths:
+    H1: 8
+    H2: 7
+    H3: 15

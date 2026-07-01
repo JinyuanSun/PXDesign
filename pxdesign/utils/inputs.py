@@ -7,10 +7,8 @@ from typing import Union
 
 import numpy as np
 import yaml
-from protenix.utils.file_io import load_gzip_pickle
 
-from pxdesign.data.utils import CIFWriter
-from pxdesign.utils.infer import convert_to_bioassembly_dict
+from pxdesign.utils.vhh_inpainting import build_vhh_inpaint_plan
 
 
 class NpEncoder(json.JSONEncoder):
@@ -44,10 +42,12 @@ def parse_yaml_to_json(yaml_path, json_path=None):
     default_name = os.path.splitext(os.path.basename(yaml_path))[0]
     task_name = cfg.get("task_name", default_name)
 
-    # Binder length (Required)
-    if "binder_length" not in cfg:
-        raise ValueError("Missing required field: 'binder_length'")
-    binder_length = int(cfg["binder_length"])
+    vhh_framework_cfg = cfg.get("vhh_framework")
+    binder_length = cfg.get("binder_length")
+    if binder_length is None and vhh_framework_cfg is None:
+        raise ValueError("Missing required field: 'binder_length' or 'vhh_framework'")
+    if binder_length is not None:
+        binder_length = int(binder_length)
 
     # --- 2. Target Parsing ---
     target_cfg = cfg.get("target", {})
@@ -130,14 +130,49 @@ def parse_yaml_to_json(yaml_path, json_path=None):
             "msa": msa_dict_per_chain,
         },
         "hotspot": hotspot_dict,
-        "generation": [
+        "generation": [],
+    }
+    if vhh_framework_cfg is not None:
+        numbering = str(vhh_framework_cfg.get("numbering", "imgt")).lower()
+        if numbering != "imgt":
+            raise ValueError("vhh_framework.numbering currently supports only 'imgt'")
+        framework_file = os.path.abspath(vhh_framework_cfg["file"])
+        framework_chain = str(vhh_framework_cfg.get("chain", "H"))
+        cdr_lengths = {
+            str(name): int(length)
+            for name, length in vhh_framework_cfg.get("cdr_lengths", {}).items()
+        }
+        plan = build_vhh_inpaint_plan(
+            framework_pdb=Path(framework_file),
+            framework_chain=framework_chain,
+            cdr_lengths=cdr_lengths,
+        )
+        json_task["generation"].append(
+            {
+                "type": "vhh_inpainting",
+                "sequence": plan.sequence,
+                "count": int(vhh_framework_cfg.get("count", 1)),
+                "framework_file": framework_file,
+                "framework_chain": framework_chain,
+                "numbering": "imgt",
+                "cdr_output_ranges": {
+                    name: list(bounds)
+                    for name, bounds in plan.cdr_output_ranges.items()
+                },
+                "fixed_source_resnums": {
+                    str(pos): resnum
+                    for pos, resnum in plan.fixed_source_resnums.items()
+                },
+            }
+        )
+    else:
+        json_task["generation"].append(
             {
                 "type": "protein",
                 "length": binder_length,
                 "count": 1,
             }
-        ],
-    }
+        )
 
     if json_path is not None:
         os.makedirs(os.path.dirname(json_path), exist_ok=True)
@@ -189,6 +224,9 @@ def dump_bioassembly_to_cif(
     """
     Dump a bioassembly dict to CIF.
     """
+    from protenix.utils.file_io import load_gzip_pickle
+    from pxdesign.data.utils import CIFWriter
+
     if isinstance(bio_dict, str) or isinstance(bio_dict, Path):
         bio_dict = load_gzip_pickle(bio_dict)
     atom_array = bio_dict["atom_array"]
@@ -266,6 +304,9 @@ def dump_target_cif_from_input_file(file_path: str, out_dir: str) -> dict:
     """
     Parse target structure from input_dict.
     """
+    from protenix.utils.file_io import load_gzip_pickle
+    from pxdesign.utils.infer import convert_to_bioassembly_dict
+
     if os.path.splitext(file_path)[1].lower() == ".json":
         json_path = file_path
     else:

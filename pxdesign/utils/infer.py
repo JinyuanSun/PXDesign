@@ -53,6 +53,11 @@ ALIASES = {
     "gamma0": "sample_diffusion.gamma0",
     "gamma_min": "sample_diffusion.gamma_min",
     "sample_diffusion_chunk_size": "infer_setting.sample_diffusion_chunk_size",
+    "framework_init_noise_sigma": "sample_diffusion.framework_init_noise_sigma",
+    "framework_guidance_weight": "sample_diffusion.framework_guidance_weight",
+    "condition_init_from_coords": "sample_diffusion.condition_init_from_coords",
+    "clash_guidance_weight": "sample_diffusion.clash_guidance_weight",
+    "clash_guidance_threshold": "sample_diffusion.clash_guidance_threshold",
 }
 
 logger = logging.getLogger(__name__)

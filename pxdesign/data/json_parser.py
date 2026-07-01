@@ -135,6 +135,10 @@ def build_polymer_from_bioassombly_dict(entity_info, remove_unresolved_residue):
     chain_array.set_annotation(
         "coord_from_cif_is_resolved", chain_array.is_resolved.astype(bool)
     )
+    chain_array.set_annotation("rigid_framework_coordinate", chain_array.coord * 0.0)
+    chain_array.set_annotation(
+        "rigid_framework_coordinate_mask", np.full(len(chain_array), 0).astype(bool)
+    )
     chain_array = add_reference_features(chain_array)
 
     if "crop" in entity_info[poly_type] and entity_info[poly_type]["crop"] is not None:
@@ -185,21 +189,59 @@ def build_polymer(entity_info: dict, remove_unresolved_residue: bool = True):
     chain_array.set_annotation("noise_level", noise)
 
     # Add condition label
+    fixed_source_resnums = entity_info[poly_type].get("fixed_source_resnums")
     if entity_info[poly_type]["sequence_type"] == "design":
         conditional_label = np.full(len(chain_array), 0).astype(bool)
     else:
         assert entity_info[poly_type]["sequence_type"] == "condition"
         conditional_label = np.full(len(chain_array), 1).astype(bool)
+    coord_from_cif = chain_array.coord * 0.0
+    coord_from_cif_is_resolved = np.full(len(chain_array), 0).astype(bool)
+    rigid_framework_coordinate = chain_array.coord * 0.0
+    rigid_framework_coordinate_mask = np.full(len(chain_array), 0).astype(bool)
+
+    if fixed_source_resnums:
+        fixed_source_resnums = {
+            int(pos): int(source_resnum)
+            for pos, source_resnum in fixed_source_resnums.items()
+        }
+        framework_coords = _read_pdb_atom_coords(
+            entity_info[poly_type]["framework_file"],
+            entity_info[poly_type].get("framework_chain", "H"),
+        )
+        for atom_idx, (res_id, atom_name) in enumerate(
+            zip(chain_array.res_id, chain_array.atom_name)
+        ):
+            source_resnum = fixed_source_resnums.get(int(res_id))
+            if source_resnum is None:
+                continue
+            coord = framework_coords.get((source_resnum, str(atom_name).strip()))
+            if coord is None:
+                continue
+            chain_array.coord[atom_idx] = coord
+            rigid_framework_coordinate[atom_idx] = coord
+            rigid_framework_coordinate_mask[atom_idx] = True
 
     chain_array.set_annotation("conditional_label", conditional_label.copy())
     res_name = chain_array.res_name.copy()
-    res_name[~conditional_label] = "xpb"
+    sequence_prev = entity_info[poly_type].get(
+        "sequence_prev", entity_info[poly_type].get("sequence", "")
+    )
+    if fixed_source_resnums and sequence_prev:
+        masked_residue_ids = {
+            idx + 1 for idx, aa in enumerate(sequence_prev) if aa == "j"
+        }
+        res_name[np.isin(chain_array.res_id, list(masked_residue_ids))] = "xpb"
+    else:
+        res_name[~conditional_label] = "xpb"
     chain_array.set_annotation("res_name", res_name)
 
     ## coord * 0 -> not from cif file
-    chain_array.set_annotation("coord_from_cif", chain_array.coord * 0.0)
+    chain_array.set_annotation("coord_from_cif", coord_from_cif)
+    chain_array.set_annotation("coord_from_cif_is_resolved", coord_from_cif_is_resolved)
+    chain_array.set_annotation("rigid_framework_coordinate", rigid_framework_coordinate)
     chain_array.set_annotation(
-        "coord_from_cif_is_resolved", np.full(len(chain_array), 0).astype(bool)
+        "rigid_framework_coordinate_mask", rigid_framework_coordinate_mask
     )
 
     if "is_resolved" not in chain_array._annot:
@@ -223,6 +265,28 @@ def build_polymer(entity_info: dict, remove_unresolved_residue: bool = True):
         crop_mask = np.isin(chain_array.res_id, np.array(save_list))
         chain_array = chain_array[crop_mask]
     return {"atom_array": chain_array}
+
+
+def _read_pdb_atom_coords(path, chain_id):
+    coords = {}
+    with open(path) as fh:
+        for line in fh:
+            if not line.startswith("ATOM"):
+                continue
+            if line[21].strip() != chain_id:
+                continue
+            try:
+                coords[(int(line[22:26]), line[12:16].strip())] = np.array(
+                    [
+                        float(line[30:38]),
+                        float(line[38:46]),
+                        float(line[46:54]),
+                    ],
+                    dtype=float,
+                )
+            except ValueError:
+                continue
+    return coords
 
 
 def add_entity_atom_array(single_job_dict: dict) -> dict:

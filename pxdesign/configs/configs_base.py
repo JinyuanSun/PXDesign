@@ -78,6 +78,11 @@ model_configs = {
         "N_step": 400,
         "N_sample": 100,
         "eta_schedule": {"type": "piecewise_65", "min": 1.0, "max": 2.5},
+        "framework_init_noise_sigma": -1.0,
+        "framework_guidance_weight": 0.0,
+        "condition_init_from_coords": False,
+        "clash_guidance_weight": 0.0,
+        "clash_guidance_threshold": 2.5,
     },
     "model": {
         "N_model_seed": 1,  # for inference

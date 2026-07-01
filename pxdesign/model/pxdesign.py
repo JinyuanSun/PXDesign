@@ -79,6 +79,11 @@ class ProtenixDesign(nn.Module):
                 "gamma0",
                 "gamma_min",
                 "noise_scale_lambda",
+                "framework_init_noise_sigma",
+                "framework_guidance_weight",
+                "condition_init_from_coords",
+                "clash_guidance_weight",
+                "clash_guidance_threshold",
                 "step_scale_eta",
             ]
         }
